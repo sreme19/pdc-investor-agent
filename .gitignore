@@ -1,0 +1,18 @@
+# All investor data — names, contacts, deal terms, research notes, outreach history — lives here
+# and NEVER enters git. See SPEC.md decision 2. This repo is public; the data is not.
+ledger/
+config.local.yaml
+.env
+.env.*
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+
+.DS_Store
