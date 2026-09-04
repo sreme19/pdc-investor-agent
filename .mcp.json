@@ -1,12 +1,12 @@
 {
   "mcpServers": {
     "commons": {
-      "command": "commons-mcp",
+      "command": "/Users/performek5/.local/bin/commons-mcp",
       "args": [
         "--audience",
         "investor"
       ]
     }
   },
-  "$comment": "The shared layer over the other repos, scoped to this one: audience `investor`. The tool set and the corpus projection are fixed by that audience and cannot be widened from a call \u2014 see portfolio-commons/src/portfolio_commons/audiences.py. Read-only by design: writes go through the owning repo's CLI or a branch and a PR."
+  "$comment": "The shared layer over the other repos, scoped to this one: audience `investor`. The tool set and the corpus projection are fixed by that audience and cannot be widened from a call \u2014 see portfolio-commons/src/portfolio_commons/audiences.py. Read-only by design: writes go through the owning repo's CLI or a branch and a PR. Absolute path because a GUI-launched client does not inherit the shell PATH; if this repo moves, re-run `uv tool install --editable ~/Desktop/Code/portfolio-commons`."
 }
