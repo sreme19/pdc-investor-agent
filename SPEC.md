@@ -1,8 +1,10 @@
 # pdc-investor-agent — Spec
 
-**Status: v1 scaffold.** Ledger CLI (`pia investor` / `touch` / `note` / `pipeline` / `stats`) is
-built and tested. Three skills (`investor-research`, `investor-outreach`, `pipeline-review`) are
-written. Nothing here has run for real yet — no investor has been logged.
+**Status: v1, in use.** Ledger CLI (`pia investor` / `touch` / `note` / `show` / `pipeline` /
+`stats`) is built and tested. Three skills (`investor-research`, `investor-outreach`,
+`pipeline-review`) are written. First real run happened 2026-09-05: four LinkedIn-sourced
+opportunities researched, all four screened out or blocked, nothing sent. The friction that run
+exposed is logged in `PILOT-LOG.md` and is what the schema below was changed to fix.
 
 ## Problem framing
 
@@ -57,10 +59,29 @@ Three record kinds, all appended to `ledger/records.jsonl` (one JSON object per 
 diffable, mergeable across concurrent sessions without lock contention). **This file never enters
 git** (decision 2).
 
-- **`investor`** — an upsert-style record: id, firm, contact, stage focus, check size, source (how
-  found), status (`cold` / `contacted` / `meeting` / `diligence` / `committed` / `passed` /
-  `declined`), free-text note. Folds to the latest line per id — re-logging with the same `--id`
-  updates status/contact fields without losing history (every prior line stays in the file).
+- **`investor`** — an upsert-style record: id, firm, contact, entity kind, stage focus, check size,
+  source (how found), source url (where the terms were verified), submission (how an approach is
+  actually made), deadline, status, free-text note.
+
+  **Entity kind** (`fund` / `angel` / `accelerator` / `programme` / `grant` / `intermediary`) exists
+  because half a fundraise pipeline is not a fund, and the terms and failure modes differ per kind —
+  an accelerator has eligibility criteria and a cohort deadline; an intermediary has a fee structure
+  worth establishing before a deck moves. They stay one record kind rather than two because `touch`
+  and `note` already reference an investor id, and a parallel kind would fork that reference.
+
+  **Status** is `cold` / `contacted` / `meeting` / `diligence` / `committed` / `passed` /
+  `screened-out` / `declined`. `passed` and `screened-out` are deliberately distinct: `passed` is
+  *they* said no after contact, `screened-out` is *we* ruled them out before contacting anyone.
+  Collapsing them loses the whole story when the pipeline is reviewed months later.
+
+  **Deadline** is `YYYY-MM-DD`, `YYYY-MM` (programmes routinely publish "closes February 2027" with
+  no day, and forcing a day means inventing one), or the literal `rolling` — recorded explicitly,
+  because blank means nobody checked and `rolling` means somebody checked and there is no date.
+
+  Folds per id, **merging later lines onto earlier ones field by field**. A later line is a partial
+  update, not a replacement: `pia investor --id x --firm F --status passed` leaves the contact and
+  source an earlier line established. Omitting `--status` leaves the existing status alone. Every
+  prior line stays in the file regardless.
 - **`touch`** — an append-only outreach event: investor id, channel (email/linkedin/warm-intro/event/
   call/other), direction (outbound/inbound), summary. Never folded — every touch stays in the history,
   which is what lets `pia pipeline` show "last touch N days ago."
@@ -72,8 +93,16 @@ requiring anyone to remember it by hand.
 
 ## Not built yet
 
-- No `pia show <id>` to print an investor's full history (research notes, touches) in one place —
-  today that means re-reading raw ledger lines or asking whoever logged the note. Worth adding once
-  the pipeline has enough investors that this is a real friction point.
+- No `pia intake` — the log-it-before-you-research-it command, so a screenshot-sourced opportunity
+  is never lost between being seen and being assessed. See `PILOT-LOG.md` L8.
+- No deadline awareness in `pia pipeline` — the field is stored but nothing flags a cohort close
+  approaching, and `screened-out` records are still shown rather than hidden by default.
+- No `opportunity-intake` skill — the screenshot → eligibility gate → verify-at-source → research
+  loop is still done by hand. `PILOT-LOG.md` L6 and L8 are the reasons it should exist.
+- **No automated traction refresh, and this one is deliberate.** The obvious feature is a command
+  that pulls live product metrics into an application fact sheet. It would require a Supabase
+  credential in this repo, which decision 4 forbids — so the fact sheet stays a dated file written
+  by a session that already has access, and drafting refuses to run against a stale one. Convenience
+  does not get to quietly delete the boundary that makes a public repo safe.
 - No scheduled/unattended run of `pipeline-review` — same reasoning as `pdc-store-release-ops`
   decision 9: prove the loop by hand first, promote to a scheduled task deliberately and later.

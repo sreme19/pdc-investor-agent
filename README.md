@@ -22,19 +22,21 @@ uv pip install -e ".[dev]"
 ## First run
 
 ```bash
-pia investor --id acme-vc --firm "Acme Ventures" --stage-focus seed --check-size "$25k-100k" \
-  --source "cold list" --status cold
+pia investor --id acme-vc --firm "Acme Ventures" --kind fund --stage-focus seed \
+  --check-size "$25k-100k" --source "cold list" --submission email --status cold
 pia pipeline
+pia show acme-vc
 ```
 
 ## Commands
 
 | Command | What it does | When you use it |
 |---|---|---|
-| `pia investor` | Adds or updates an investor record: firm, contact, stage focus, check size, source, status. Re-run with the same `--id` to move them through the pipeline. | When a new investor enters the pipeline, or their status/contact info changes. |
+| `pia investor` | Adds or updates a record: firm, contact, entity kind, stage focus, check size, source, source url, submission route, deadline, status. Re-run with the same `--id` to move them through the pipeline — later lines merge onto earlier ones field by field, so a status change never blanks the contact. | When a new investor or programme enters the pipeline, or their status/details change. |
 | `pia touch` | Logs one outreach event: channel, direction, summary. | Every time an email/LinkedIn message/call actually happens, in either direction. |
 | `pia note` | Logs a research or meeting note, with optional next steps. | After researching a fund, or after a call/meeting. |
-| `pia pipeline` | Shows every investor grouped by status, with the age of their last touch. | Before a follow-up pass, or any time you want to know where things stand. |
+| `pia show <id>` | Prints one record's whole file: every field, plus every research note and touch in the order they happened. | Picking up an investor a previous session logged, before drafting anything. |
+| `pia pipeline` | Shows every investor grouped by status, with entity kind, deadline, and the age of their last touch. | Before a follow-up pass, or any time you want to know where things stand. |
 | `pia stats` | One-line record counts by kind. | Quick sanity check. |
 
 ## Skills
@@ -51,5 +53,9 @@ pia pipeline
 - No Anthropic client is imported anywhere in the package.
 - No credentials of any kind; no email/LinkedIn/CRM API token, no write path to any financial system.
 - `pia touch` and `pia note` both require the investor to already exist — no orphan records.
+- A record you screened out yourself (`screened-out`) is never conflated with one that turned you
+  down (`passed`).
+- No credential lives here, so the CLI cannot pull product metrics itself — see `SPEC.md` decision 4
+  and the "Not built yet" note on why that stays true.
 - `ledger/` is gitignored from the first commit (`SPEC.md` decision 2) — investor names, contacts,
   check sizes, and deal terms must never be pushed to GitHub.

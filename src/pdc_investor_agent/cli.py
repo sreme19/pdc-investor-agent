@@ -12,7 +12,26 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
-from pdc_investor_agent.ledger import Ledger, LedgerError
+from pdc_investor_agent.ledger import (
+    VALID_ENTITY_KINDS,
+    VALID_STATUSES,
+    VALID_SUBMISSIONS,
+    Ledger,
+    LedgerError,
+)
+
+# Display order for `pipeline`: the live pipeline in the order it actually progresses, then the two
+# ways a record dies. `screened-out` sits last because it is the pile you deliberately stop looking at.
+STATUS_ORDER = [
+    "cold",
+    "contacted",
+    "meeting",
+    "diligence",
+    "committed",
+    "passed",
+    "declined",
+    "screened-out",
+]
 
 
 def _age_days(ts: str) -> int:
@@ -22,19 +41,29 @@ def _age_days(ts: str) -> int:
     return (datetime.now(timezone.utc) - then).days
 
 
+def _status_order() -> list[str]:
+    """Declared order first, then anything valid that isn't listed, so nothing goes invisible."""
+    return STATUS_ORDER + sorted(VALID_STATUSES - set(STATUS_ORDER))
+
+
 def cmd_investor(args: argparse.Namespace) -> int:
     ledger = Ledger()
     record = ledger.investor(
         args.id,
         args.firm,
         contact=args.contact or "",
+        entity_kind=args.kind or "",
         stage_focus=args.stage_focus or "",
         check_size=args.check_size or "",
         source=args.source or "",
-        status=args.status,
+        source_url=args.source_url or "",
+        submission=args.submission or "",
+        deadline=args.deadline or "",
+        status=args.status or "",
         note=args.note or "",
     )
-    print(f"logged investor [{record['id']}] {record['firm']} — status {record['status']}")
+    merged = ledger.latest_investor(args.id) or record
+    print(f"logged investor [{merged['id']}] {merged['firm']} — status {merged.get('status') or 'cold'}")
     return 0
 
 
@@ -56,14 +85,60 @@ def cmd_note(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_show(args: argparse.Namespace) -> int:
+    ledger = Ledger()
+    detail = ledger.show(args.id)
+    if detail is None:
+        print(f"error: no investor with id {args.id!r}", file=sys.stderr)
+        return 1
+    inv = detail["investor"]
+
+    headline = f"[{inv['id']}] {inv['firm']}"
+    if inv.get("entity_kind"):
+        headline += f"  ({inv['entity_kind']})"
+    print(headline)
+    print(f"  status: {inv.get('status') or 'cold'}")
+    for label, key in (
+        ("contact", "contact"),
+        ("stage focus", "stage_focus"),
+        ("check size", "check_size"),
+        ("submission", "submission"),
+        ("deadline", "deadline"),
+        ("source", "source"),
+        ("source url", "source_url"),
+        ("note", "note"),
+    ):
+        if inv.get(key):
+            print(f"  {label}: {inv[key]}")
+
+    if not detail["history"]:
+        print("\n  (no notes or touches logged)")
+        return 0
+
+    print(f"\n  history ({len(detail['history'])} entries, oldest first):")
+    for entry in detail["history"]:
+        stamp = entry["ts"][:10]
+        age = _age_days(entry["ts"])
+        if entry["kind"] == "touch":
+            head = f"{entry['direction']} touch via {entry['channel']}"
+        else:
+            head = f"{entry['note_kind']} note"
+        print(f"\n  · {stamp} ({age}d ago) — {head}")
+        print(f"      {entry['summary']}")
+        if entry.get("next_steps"):
+            print(f"      next: {entry['next_steps']}")
+        if entry.get("note"):
+            print(f"      note: {entry['note']}")
+    return 0
+
+
 def cmd_pipeline(args: argparse.Namespace) -> int:
     ledger = Ledger()
     p = ledger.pipeline()
     if not p["by_status"]:
         print("(no investors logged yet)")
         return 0
-    order = ["cold", "contacted", "meeting", "diligence", "committed", "passed", "declined"]
-    for status in order:
+    for status in _status_order():
         group = p["by_status"].get(status)
         if not group:
             continue
@@ -71,7 +146,12 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         for investor in group:
             last_touch = p["last_touch_by_investor"].get(investor["id"])
             touch_str = f"last touch {_age_days(last_touch['ts'])}d ago via {last_touch['channel']}" if last_touch else "no touches logged"
-            print(f"  [{investor['id']}] {investor['firm']} — {touch_str}")
+            label = investor["firm"]
+            if investor.get("entity_kind"):
+                label += f" ({investor['entity_kind']})"
+            print(f"  [{investor['id']}] {label} — {touch_str}")
+            if investor.get("deadline"):
+                print(f"      deadline: {investor['deadline']}")
             if investor.get("note"):
                 print(f"      note: {investor['note']}")
     return 0
@@ -93,17 +173,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pia")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("investor", help="Add or update an investor record")
+    p = sub.add_parser(
+        "investor",
+        help="Add or update an investor record (also: accelerators, programmes, grants, intermediaries)",
+    )
     p.add_argument("--id", required=True, help="stable slug, e.g. acme-ventures")
     p.add_argument("--firm", required=True)
     p.add_argument("--contact", help="name <email>")
+    p.add_argument(
+        "--kind",
+        choices=sorted(VALID_ENTITY_KINDS),
+        help="what this counterparty is; half a fundraise pipeline is not a fund",
+    )
     p.add_argument("--stage-focus", help="e.g. pre-seed, seed, series-a")
     p.add_argument("--check-size", help="e.g. $25k-100k")
     p.add_argument("--source", help="how this investor was found / who referred them")
+    p.add_argument("--source-url", help="where the terms were verified — the counterparty's own page")
+    p.add_argument(
+        "--submission",
+        choices=sorted(VALID_SUBMISSIONS),
+        help="how an approach is actually made (decides what gets drafted)",
+    )
+    p.add_argument("--deadline", help="YYYY-MM-DD, YYYY-MM when only a month was published, or 'rolling' when there is none")
     p.add_argument(
         "--status",
-        default="cold",
-        choices=["cold", "contacted", "meeting", "diligence", "committed", "passed", "declined"],
+        choices=sorted(VALID_STATUSES),
+        help="omit to leave the existing status alone; a record that never had one reads as 'cold'",
     )
     p.add_argument("--note")
     p.set_defaults(func=cmd_investor)
@@ -122,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--summary", required=True)
     p.add_argument("--next-steps")
     p.set_defaults(func=cmd_note)
+
+    p = sub.add_parser("show", help="One investor's whole file: record, notes and touches in order")
+    p.add_argument("id", help="investor id")
+    p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("pipeline", help="Show every investor grouped by status")
     p.set_defaults(func=cmd_pipeline)
