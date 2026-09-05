@@ -86,6 +86,8 @@ def test_touch_and_investor_bodies_also_take_files(run, tmp_path):
     touch_note.write_text("they asked about the $899K category figure")
     run(
         "touch", "--investor", "acme-vc", "--channel", "email", "--direction", "outbound",
+        # These tests are about the free-text path, not eligibility; the gate is covered below.
+        "--force-unscreened",
         "--summary", "sent intro", "--note-file", str(touch_note),
     )
     assert _records(run, "touch")[0]["note"] == "they asked about the $899K category figure"
@@ -97,6 +99,8 @@ def test_touch_summary_from_file(run, tmp_path):
     body.write_text("pitched at a $3M valuation")
     run(
         "touch", "--investor", "acme-vc", "--channel", "email", "--direction", "outbound",
+        # These tests are about the free-text path, not eligibility; the gate is covered below.
+        "--force-unscreened",
         "--summary-file", str(body),
     )
     assert _records(run, "touch")[0]["summary"] == "pitched at a $3M valuation"
@@ -201,3 +205,154 @@ def test_echo_says_figure_not_figures_for_one(acme):
 
 def test_figures_helper_keeps_decimals_and_separators_whole():
     assert cli._figures("2.5% of 1,160 across 80 deals.") == ["2.5", "1,160", "80"]
+
+
+# -- intake ----------------------------------------------------------------------
+#
+# The screenshot path (PILOT-LOG.md L2). What matters here is the separation the command exists to
+# enforce: a claim from a post lands as a `sighting` note and never as a verified field.
+
+
+def test_intake_writes_an_investor_stub_and_a_sighting(run):
+    code, out = run(
+        "intake", "--id", "acme-vc", "--firm", "Acme Ventures",
+        "--seen", "post claims pre-seed cheques, applications close October",
+    )
+    assert code == 0
+    investors = _records(run, "investor")
+    notes = _records(run, "note")
+    assert len(investors) == 1
+    assert investors[0]["firm"] == "Acme Ventures"
+    assert investors[0]["status"] == "cold"
+    assert investors[0]["source"] == "LinkedIn screenshot"
+    assert len(notes) == 1
+    assert notes[0]["note_kind"] == "sighting"
+    assert "close October" in notes[0]["summary"]
+    assert "nothing verified yet" in out
+
+
+def test_intake_cannot_write_claims_into_verified_fields(run):
+    """The omission is the feature: a cheque size seen in a post must not be able to look like one
+    read off the counterparty's own site. See PILOT-LOG L6/L19."""
+    for flag in ("--check-size", "--deadline", "--stage-focus", "--submission"):
+        with pytest.raises(SystemExit):
+            run("intake", "--id", "x", "--firm", "X", "--seen", "s", flag, "whatever")
+
+    # Nothing was written at all — argparse rejected each call before the ledger was touched.
+    assert not run.path.exists()
+
+
+def test_intake_leaves_verified_fields_empty(run):
+    run("intake", "--id", "acme-vc", "--firm", "Acme Ventures", "--seen", "claims $500k cheques")
+    investor = _records(run, "investor")[0]
+    assert investor["check_size"] == ""
+    assert investor["deadline"] == ""
+    assert investor["stage_focus"] == ""
+    assert investor["submission"] == ""
+
+
+def test_re_intake_does_not_drag_a_contacted_record_back_to_cold(run):
+    run("intake", "--id", "acme-vc", "--firm", "Acme Ventures", "--seen", "first sighting")
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "contacted")
+    _, out = run("intake", "--id", "acme-vc", "--firm", "Acme Ventures", "--seen", "seen again")
+
+    from pdc_investor_agent.ledger import Ledger
+    assert Ledger(path=run.path).latest_investor("acme-vc")["status"] == "contacted"
+    assert "already in the ledger at status contacted" in out
+    assert len(_records(run, "note")) == 2
+
+
+def test_intake_body_can_come_from_a_file(run, tmp_path):
+    body = tmp_path / "seen.md"
+    body.write_text("post claims a $500k cheque and a 15 Oct close")
+    _, out = run(
+        "intake", "--id", "acme-vc", "--firm", "Acme Ventures", "--seen-file", str(body),
+    )
+    assert "500" in out and "15" in out
+    assert "$500k" in _records(run, "note")[0]["summary"]
+
+
+def test_intake_records_where_it_was_seen(run):
+    run(
+        "intake", "--id", "acme-vc", "--firm", "Acme Ventures", "--seen", "claims seed focus",
+        "--source", "Twitter thread", "--source-url", "https://example.com/post/1",
+    )
+    investor = _records(run, "investor")[0]
+    assert investor["source"] == "Twitter thread"
+    assert investor["source_url"] == "https://example.com/post/1"
+
+
+# -- the eligibility gate at the CLI ------------------------------------------------
+
+
+def test_screen_records_the_verdict_and_its_evidence(run):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    code, out = run(
+        "screen", "--investor", "acme-vc", "--verdict", "eligible",
+        "--criterion", "seed consumer, no sector exclusion",
+        "--reason", "their site lists seed and names no excluded sectors",
+    )
+    assert code == 0
+    assert "eligible" in out
+    assert _records(run, "investor")[-1]["eligibility"] == "eligible"
+    assert _records(run, "note")[-1]["note_kind"] == "screening"
+
+
+def test_screen_ineligible_reports_the_status_change(run):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    _, out = run(
+        "screen", "--investor", "acme-vc", "--verdict", "ineligible",
+        "--criterion", "excludes B2C", "--reason", "their FAQ puts consumer out of scope",
+    )
+    assert "screened-out" in out
+
+
+def test_cli_refuses_an_outbound_touch_on_an_unscreened_record(run, capsys):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    code = cli.main([
+        "touch", "--investor", "acme-vc", "--channel", "email",
+        "--direction", "outbound", "--summary", "sent the deck",
+    ])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "nobody has screened" in err
+    assert "pia screen" in err
+    assert _records(run, "touch") == []
+
+
+def test_cli_override_warns_on_stderr(run, capsys):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    code = cli.main([
+        "touch", "--investor", "acme-vc", "--channel", "email", "--direction", "outbound",
+        "--summary", "sent the deck", "--force-unscreened",
+    ])
+    assert code == 0
+    assert "logged past the eligibility gate" in capsys.readouterr().err
+
+
+def test_show_always_states_the_eligibility_even_when_unset(run):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    _, out = run("show", "acme-vc")
+    assert "UNSCREENED" in out
+
+
+def test_pipeline_flags_unscreened_but_not_closed_records(run):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    run("investor", "--id", "dead-vc", "--firm", "Dead Ventures", "--status", "screened-out")
+    _, out = run("pipeline")
+
+    cold_line = next(ln for ln in out.splitlines() if "acme-vc" in ln)
+    closed_line = next(ln for ln in out.splitlines() if "dead-vc" in ln)
+    assert "[UNSCREENED]" in cold_line
+    # Nobody is about to approach a closed record, and a marker on every line is one nobody reads.
+    assert "[UNSCREENED]" not in closed_line
+
+
+def test_pipeline_drops_the_flag_once_screened(run):
+    run("investor", "--id", "acme-vc", "--firm", "Acme Ventures", "--status", "cold")
+    run(
+        "screen", "--investor", "acme-vc", "--verdict", "eligible",
+        "--criterion", "seed consumer", "--reason", "read on their site",
+    )
+    _, out = run("pipeline")
+    assert "[UNSCREENED]" not in out

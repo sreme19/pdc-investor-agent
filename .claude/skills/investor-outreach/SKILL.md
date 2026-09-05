@@ -15,6 +15,26 @@ any logged research notes for them (`pia note` entries show up nowhere else — 
 yet, so ask the user to paste the relevant note if you weren't the session that logged it, or re-run
 `investor-research` first if none exists).
 
+## Before drafting: check the eligibility verdict
+
+`pia show <id>` prints it directly under the status, always, even when it is unset. Read it.
+
+- **`eligible`** — proceed.
+- **`ineligible`** — do not draft. The record names the published criterion we fail. Tell the user
+  which one, and stop.
+- **`UNSCREENED`** — nobody has checked this counterparty against their own published criteria.
+  Do not draft. Run the eligibility gate first (the `opportunity-intake` skill, step 3) and record
+  the verdict with `pia screen`.
+
+A draft is cheap to write and expensive to send to a fund that excludes consumer dating by policy.
+The `cold` list is not a list of qualified counterparties; it is a list of ones nobody has ruled out
+yet, which is a different thing entirely (`PILOT-LOG.md` L8, L31).
+
+Note what this rule is and is not. `pia` refuses to *log* an outbound touch on an unscreened record,
+which catches the mistake at the first moment the tooling is involved — but that is after the human
+has already sent. Nothing in this repo sits upstream of a draft. So this check is yours to make, and
+skipping it is not something anything else will catch for you.
+
 ## Drafting
 
 - Lead with the specific fit reason from the research note (portfolio overlap, thesis match), not a
@@ -37,6 +57,11 @@ pia touch --investor acme-vc --channel email --direction outbound \
   --summary "cold email referencing thesis fit + <comparable> portfolio company"
 pia investor --id acme-vc --firm "Acme Ventures" --status contacted
 ```
+
+If this refuses with `nobody has screened ...`, the eligibility gate was skipped and a message has
+already gone out to a counterparty nobody checked. Say so to the user plainly rather than quietly
+adding `--force-unscreened`. The override exists for a deliberate, explained exception — it records
+itself on the touch — not for getting past a gate that just did its job.
 
 If the summary quotes a figure — an amount discussed, a cheque range, a valuation — use
 `--summary-file` with the text in a file instead of typing it inline. The shell eats `$` sequences

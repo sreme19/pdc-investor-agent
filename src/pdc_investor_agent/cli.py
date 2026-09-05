@@ -15,6 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pdc_investor_agent.ledger import (
+    CLOSED_STATUSES,
+    UNSCREENED,
+    VALID_ELIGIBILITY,
     VALID_ENTITY_KINDS,
     VALID_STATUSES,
     VALID_SUBMISSIONS,
@@ -116,6 +119,35 @@ def _age_days(ts: str) -> int:
     return (datetime.now(timezone.utc) - then).days
 
 
+def _mirror_after_write(ledger) -> None:
+    """Push the ledger into the Numbers sheet, if the user has created one.
+
+    Best-effort on purpose. `records.jsonl` is the source of truth and the write has already
+    landed by the time this runs; a sheet left open in Numbers must not turn a successful ledger
+    write into a failed command. It warns instead, loudly enough to be worth acting on, and
+    `pia sheet` catches the sheet up afterwards.
+
+    Silent when no sheet exists: the mirror is opt-in via `pia sheet --init`, and nagging on every
+    write about a file the user never asked for is how a warning gets trained out of being read.
+    """
+    from pdc_investor_agent.numbers_sheet import SheetError, default_sheet_path, mirror
+
+    path = default_sheet_path(ledger.path)
+    if not path.exists():
+        return
+    try:
+        print(f"  {mirror(ledger, path)}")
+    except SheetError as e:
+        print(f"warning: ledger written, sheet NOT updated — {e}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 - see below
+        # Deliberately blind. The ledger append has already succeeded by the time this runs, and
+        # the exit code is read by scripts and skills as "did the record land". Letting an
+        # unforeseen fault in the mirror — a numbers-parser edge case, a bug in row building —
+        # turn a successful write into a failed command would report the wrong thing about the
+        # only part that matters. It degrades to a visible warning; `pia sheet` catches up after.
+        print(f"warning: ledger written, sheet NOT updated — {e}", file=sys.stderr)
+
+
 def _status_order() -> list[str]:
     """Declared order first, then anything valid that isn't listed, so nothing goes invisible."""
     return STATUS_ORDER + sorted(VALID_STATUSES - set(STATUS_ORDER))
@@ -146,6 +178,84 @@ def cmd_investor(args: argparse.Namespace) -> int:
     if check_size:
         print(f"  check size: {check_size}")
     print(_integrity_line(check_size, args.source or "", note))
+    _mirror_after_write(ledger)
+    return 0
+
+
+def cmd_intake(args: argparse.Namespace) -> int:
+    """Log a sighting: a counterparty somebody saw, before anybody has checked anything.
+
+    Two lines land, and the split is the point. The investor line carries only identity and where
+    it was seen. Everything the source *claimed* — cheque size, deadline, stage, who to write to —
+    goes into a `sighting` note as prose, and none of it touches the verified fields.
+
+    `intake` therefore has no `--check-size`, `--deadline`, `--stage-focus` or `--submission` flags,
+    and that omission is the feature. Those fields are for figures read off the counterparty's own
+    site; a number lifted from a LinkedIn post that lands in `check_size` is indistinguishable from
+    a verified one a month later. Use `pia investor` to fill them in once each has been checked.
+    See PILOT-LOG.md L2 (nothing catches a screenshot before research) and L6/L19 (posts misstate
+    terms, and verification is per field).
+    """
+    ledger = Ledger()
+    seen = _body(args, "seen")
+    existing = ledger.latest_investor(args.id)
+
+    ledger.investor(
+        args.id,
+        args.firm,
+        entity_kind=args.kind or "",
+        source=args.source,
+        source_url=args.source_url or "",
+        # Only on the way in. Re-running intake on a counterparty already at `contacted` must not
+        # drag it back to `cold` — an omitted status leaves the existing one alone.
+        status="" if existing else "cold",
+    )
+    ledger.note(args.id, "sighting", seen)
+
+    verb = "updated" if existing else "logged"
+    print(f"{verb} sighting [{args.id}] {args.firm}" + (f" ({args.kind})" if args.kind else ""))
+    print(_integrity_line(seen, args.source, args.source_url or ""))
+    if existing:
+        print(f"  already in the ledger at status {existing.get('status') or 'cold'} — sighting appended")
+    print("  claims recorded as a sighting; nothing verified yet")
+    print("  next: eligibility gate, then verify each field at the counterparty's own site")
+    _mirror_after_write(ledger)
+    return 0
+
+
+def cmd_sheet(args: argparse.Namespace) -> int:
+    from pdc_investor_agent.numbers_sheet import (
+        SheetError,
+        create,
+        default_sheet_path,
+        mirror,
+    )
+
+    ledger = Ledger()
+    path = default_sheet_path(ledger.path)
+    try:
+        if args.init:
+            print(create(path))
+        print(mirror(ledger, path))
+    except SheetError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"  {path}")
+    return 0
+
+
+def cmd_screen(args: argparse.Namespace) -> int:
+    ledger = Ledger()
+    reason = _body(args, "reason")
+    ledger.screen(args.investor, args.verdict, args.criterion, reason)
+    print(f"screened [{args.investor}] — {args.verdict}")
+    print(f"  criterion: {args.criterion}")
+    if args.verdict == "ineligible":
+        print("  status set to screened-out (we ruled them out; they never said no)")
+    else:
+        print("  outbound touches are now unblocked for this record")
+    print(_integrity_line(args.criterion, reason))
+    _mirror_after_write(ledger)
     return 0
 
 
@@ -153,9 +263,23 @@ def cmd_touch(args: argparse.Namespace) -> int:
     ledger = Ledger()
     summary = _body(args, "summary")
     note = _body(args, "note")
-    record = ledger.touch(args.investor, args.channel, args.direction, summary, note=note)
+    record = ledger.touch(
+        args.investor,
+        args.channel,
+        args.direction,
+        summary,
+        note=note,
+        force_unscreened=args.force_unscreened,
+    )
+    if record.get("forced_past_eligibility"):
+        print(
+            f"warning: logged past the eligibility gate — {args.investor} is "
+            f"{record['forced_past_eligibility']}. Recorded on the touch.",
+            file=sys.stderr,
+        )
     print(f"logged {record['direction']} touch [{record['investor_id']}] via {record['channel']}: {record['summary']}")
     print(_integrity_line(summary, note))
+    _mirror_after_write(ledger)
     return 0
 
 
@@ -166,6 +290,7 @@ def cmd_note(args: argparse.Namespace) -> int:
     record = ledger.note(args.investor, args.kind, summary, next_steps=next_steps)
     print(f"logged {record['note_kind']} note [{record['investor_id']}]: {record['summary']}")
     print(_integrity_line(summary, next_steps))
+    _mirror_after_write(ledger)
     return 0
 
 
@@ -182,6 +307,17 @@ def cmd_show(args: argparse.Namespace) -> int:
         headline += f"  ({inv['entity_kind']})"
     print(headline)
     print(f"  status: {inv.get('status') or 'cold'}")
+    # Directly under status, always printed, never omitted when empty — the whole failure this
+    # field exists for is an unscreened record being indistinguishable from a checked one.
+    eligibility = inv.get("eligibility") or UNSCREENED
+    if eligibility == "eligible":
+        print("  eligibility: eligible")
+    elif eligibility == "ineligible":
+        print("  eligibility: INELIGIBLE — do not draft, do not approach")
+    else:
+        print("  eligibility: UNSCREENED — nobody has checked their published criteria")
+    if inv.get("eligibility_criterion"):
+        print(f"    criterion: {inv['eligibility_criterion']}")
     for label, key in (
         ("contact", "contact"),
         ("stage focus", "stage_focus"),
@@ -233,7 +369,16 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
             label = investor["firm"]
             if investor.get("entity_kind"):
                 label += f" ({investor['entity_kind']})"
-            print(f"  [{investor['id']}] {label} — {touch_str}")
+            # Flagged inline rather than in a separate section, because the question this answers
+            # is "is this row actionable", and it has to be answerable without leaving the row.
+            # Suppressed for records already out of play — nobody is about to approach those, and
+            # a marker on every line is a marker nobody reads.
+            unscreened = (
+                not (investor.get("eligibility") or "")
+                and (investor.get("status") or "cold") not in CLOSED_STATUSES
+            )
+            flag = "  [UNSCREENED]" if unscreened else ""
+            print(f"  [{investor['id']}] {label}{flag} — {touch_str}")
             if investor.get("deadline"):
                 print(f"      deadline: {investor['deadline']}")
             if investor.get("note"):
@@ -310,10 +455,81 @@ def build_parser() -> argparse.ArgumentParser:
     _add_body_field(p, "note", required=False, help="free-text note on the record itself")
     p.set_defaults(func=cmd_investor)
 
+    p = sub.add_parser(
+        "intake",
+        help="Log a counterparty somebody saw, before anything about it has been verified",
+        description="Records identity and what the source claimed, as a sighting. Deliberately has "
+        "no --check-size/--deadline/--stage-focus/--submission: those fields are for figures read "
+        "off the counterparty's own site, and a claim from a post must not be able to look like one.",
+    )
+    p.add_argument("--id", required=True, help="stable slug, e.g. acme-ventures")
+    p.add_argument("--firm", required=True, help="as the source names them; correct it later if they rebrand")
+    p.add_argument(
+        "--kind",
+        choices=sorted(VALID_ENTITY_KINDS),
+        help="only if the source actually says; omit when it is not yet clear what they are",
+    )
+    p.add_argument(
+        "--source",
+        default="LinkedIn screenshot",
+        help="where this was seen (default: 'LinkedIn screenshot')",
+    )
+    p.add_argument("--source-url", help="the post/page it was seen on — not yet a verification")
+    _add_body_field(
+        p,
+        "seen",
+        required=True,
+        help="what the source claimed: ask, cheque size, deadline, how to apply, who posted it",
+    )
+    p.set_defaults(func=cmd_intake)
+
+    p = sub.add_parser(
+        "sheet",
+        help="Refresh the Apple Numbers mirror of the ledger (read-only; the ledger always wins)",
+    )
+    p.add_argument(
+        "--init",
+        action="store_true",
+        help="create the sheet first — run this once, then every pia write keeps it current",
+    )
+    p.set_defaults(func=cmd_sheet)
+
+    p = sub.add_parser(
+        "screen",
+        help="Record an eligibility verdict against the counterparty's own published criteria",
+        description="Both the criterion and the reason are required. A verdict with no evidence "
+        "behind it is the same problem this field was added to fix, moved into a new field.",
+    )
+    p.add_argument("--investor", required=True, help="investor id")
+    p.add_argument(
+        "--verdict",
+        required=True,
+        choices=sorted(VALID_ELIGIBILITY),
+        help="'ineligible' also sets status to screened-out — we ruled them out, they never said no",
+    )
+    p.add_argument(
+        "--criterion",
+        required=True,
+        help="the published rule that decided it, e.g. 'excludes B2C; seed only; requires relocation'",
+    )
+    _add_body_field(
+        p,
+        "reason",
+        required=True,
+        help="what you actually read on their own site, and where",
+    )
+    p.set_defaults(func=cmd_screen)
+
     p = sub.add_parser("touch", help="Log an outreach touch (email, LinkedIn, intro, call)")
     p.add_argument("--investor", required=True, help="investor id")
     p.add_argument("--channel", required=True, choices=["email", "linkedin", "warm-intro", "event", "call", "other"])
     p.add_argument("--direction", required=True, choices=["outbound", "inbound"])
+    p.add_argument(
+        "--force-unscreened",
+        action="store_true",
+        help="log an outbound touch to a record nobody screened. The override is recorded on the "
+        "touch, so a forced one stays distinguishable from a screened one afterwards.",
+    )
     _add_body_field(p, "summary", required=True, help="what was actually said or sent")
     _add_body_field(p, "note", required=False, help="anything else worth keeping about this touch")
     p.set_defaults(func=cmd_touch)

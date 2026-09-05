@@ -324,3 +324,125 @@ half of its own candidate fix that turned out to be backwards.
 Both halves of the pipeline now exist. The binding constraint is no longer sourcing — it is that the
 best-fit counterparty found so far cannot be approached until the founder supplies the Round block
 and a revenue figure, and neither is something this loop can go and find.
+
+---
+
+## Session 5 — 2026-09-05 · the intake path and a sheet to read it in
+
+Two things built, both of which the earlier passes had asked for by name: the screenshot intake
+loop (L2, L8), and somewhere to actually look at the pipeline.
+
+### L29 — There was no file a human could open · FIXED
+Four sourcing passes produced 28 investor records and 26 notes, and the only ways to see any of it
+were `pia pipeline` (a status roll-up), `pia show <id>` (one record at a time), and 44KB of JSONL.
+The operator's habit in the sibling repo is to read pipeline state out of a Numbers sheet; here
+there was nothing equivalent, so state lived in whatever the last session happened to print.
+
+Shipped: `ledger/PDC Investor Pipeline 2026.numbers`, created by `pia sheet --init` and refreshed
+by every subsequent write. Four tabs — Pipeline, Touches & Notes, Research Files, Legend. Same
+contract as `job-hunt-agent`'s tracker: one-way, ledger wins, hand edits get overwritten.
+
+Two design notes worth keeping. First, rows are matched by `id` and columns by header name, so the
+sheet can be sorted and rearranged freely and a sync still finds each row. `job-hunt-agent` has to
+build a row identity out of `Date + Company + Role` and count repeats because a job ledger has no
+stable key; this one does, which removes a whole class of row-collapse bug rather than solving it.
+Second, the mirror runs *after* the append and can never fail the command — the exit code of a
+`pia` write means "did the record land", and a sheet left open in Numbers must not be able to make
+that read false.
+
+### L30 — Intake exists, and the interesting part is the flags it does not have · FIXED (L2), and it sharpens L19
+`pia intake` writes two lines: an investor stub with identity and provenance, and a `sighting` note
+holding what the source claimed. `sighting` is a new note kind, deliberately not `research` —
+`research` means somebody went and checked.
+
+The part that took the longest to get right was what to leave out. The obvious intake command
+accepts `--check-size`, `--deadline`, `--stage-focus` and `--submission`, because a post usually
+states all four. That command would be actively harmful: L6 found a post whose implied deadline was
+five months off the programme's own published one, and L19 found an aggregator cheque size 6x from
+the fund's own figure. Put those into `check_size` and `deadline` at intake and, a month later,
+nothing distinguishes them from figures verified at source — not a draft, not a review, not the
+operator. So `intake` has none of those flags, the claims go into the sighting note as prose, and
+the verified fields stay empty until `pia investor` fills them from a first-party page.
+
+This is the cheapest available version of L19's per-field provenance: not provenance per field, but
+a hard structural split between *claimed* and *checked*, enforced by the argument parser rather than
+by the writer remembering. L19 stays open — a record still cannot say which of its verified fields
+came from where.
+
+### L31 — The eligibility gate is in the loop now, but it is prose, not code
+The `opportunity-intake` skill puts screening before research, which is the inversion L8 asked for,
+and encodes the specific traps the pilot hit: intermediaries describing themselves as investors,
+relocation as a threshold rather than a keyword (L20), a 404 meaning "re-derive their identity"
+rather than "they publish nothing" (L25), and an unreadable site being a third state rather than
+"not checked yet" (L24).
+
+All of that lives in a markdown file that a session may or may not follow. It is a checklist, not a
+gate — nothing refuses to record a `cold` status for a counterparty whose eligibility was never
+examined. The distinction matters: a skill can be skipped by a session that believes it already
+knows the answer, and nothing anywhere notices.
+
+### Still open after this pass
+L1 (bootstrap), L6/L19/L24 (verification: per-field provenance, and sometimes impossible — the
+claimed/checked split narrows this but does not close it), L12/L20 (constraints as thresholds),
+L17 (category notes still have no home; they are now at least *listed* in the sheet's Research
+Files tab, marked as relating to no single record), L18, L22/L27 (fact sheet shape, still
+blocking), L25, L26, plus L31 above.
+
+L2 and L8 are closed by this pass. L29 and L30 were found and fixed in it.
+
+The binding constraint is unchanged and is not a tooling problem: the best-fit counterparty in the
+ledger still cannot be approached until the founder supplies the Round block and a revenue figure.
+
+---
+
+## Session 6 — 2026-09-05 · closing the eligibility gap
+
+### L31 — CLOSED, with a caveat that is the point
+L31 observed that the eligibility gate lived in a markdown file a session could skip, and that
+nothing refused to record a `cold` status for a counterparty nobody had examined.
+
+Shipped: `eligibility` as a field in its own right (`unscreened` / `eligible` / `ineligible`) with
+the criterion that decided it, written only by `pia screen`, which requires both a criterion and a
+reason. `ineligible` sets `screened-out` in the same call. `pia touch --direction outbound` refuses
+on anything not `eligible`, with `--force-unscreened` as a recorded override.
+
+Two decisions inside that are worth keeping. First, eligibility is a *field*, not a new status
+value: status tracks relationship progress, eligibility is a fact about the counterparty that does
+not move with it, and the pipeline already learned in L7 what happens when one field carries two
+meanings. Second, `unscreened` cannot be written as a verdict — it is the absence of one. Allowing
+it would let a record look screened while recording that nothing had been found, which is precisely
+the failure the field exists to remove.
+
+The caveat, stated plainly because the temptation is to write this up as solved: **the gate cannot
+prevent the thing it is about.** Drafting happens in a session and sending happens by hand, and
+nothing in this CLI is upstream of either. The refusal fires when an outbound touch is *logged* —
+after the message has gone. It is a smoke alarm, not a lock. What actually changed is that an
+unchecked record can no longer look ready: every read states the verdict, and the sheet carries it
+as a column beside status. The remaining enforcement is a judgment call in `investor-outreach`,
+which is where L31's original complaint still lives, one layer up.
+
+### L32 — The gate's own test suite showed how intrusive it is · worth watching
+Adding the refusal broke six existing tests, all of which log an outbound touch without caring about
+eligibility. They were fixed with `--force-unscreened`, which is legitimate — those tests are about
+other things — but the ratio is a signal. If routine work keeps reaching for the override, the
+override becomes the path and the gate becomes decoration. Worth re-reading the ledger in a month
+for `forced_past_eligibility`: a handful of deliberate exceptions is the design working, and a
+steady stream is the design failing.
+
+### Backfill
+The two existing `screened-out` records were backfilled to `ineligible` by transcribing the
+published criterion already recorded in their own research notes — a public-goods grant pool whose
+published rules exclude for-profit projects outright, and an accelerator requiring a founder to
+relocate long-term. No verdict was invented, and neither counterparty is named here: this file is
+tracked and this repo is public (SPEC decisions 2 and 6), so the criterion travels and the identity
+stays in the gitignored ledger. The other 18 records remain `unscreened`, which is true: the pilot screened several of
+them, but not in a form anything can read, and filling the column to make it look tidy would be the
+same fabrication this loop keeps writing rules against.
+
+### Still open after this pass
+L1 (bootstrap), L6/L19/L24 (verification: per-field provenance, sometimes impossible), L12/L20
+(constraints as thresholds), L17 (category notes have no home; listed in the sheet, still not
+modelled), L18, L22/L27 (fact sheet shape, still blocking), L25, L26, plus L32 above.
+
+The binding constraint is unchanged: the best-fit counterparty in the ledger cannot be approached
+until the founder supplies the Round block and a revenue figure.

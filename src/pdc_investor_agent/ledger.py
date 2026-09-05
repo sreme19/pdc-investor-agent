@@ -60,7 +60,29 @@ VALID_SUBMISSIONS = {"form", "email", "dm", "warm-intro", "event", "other"}
 
 VALID_CHANNELS = {"email", "linkedin", "warm-intro", "event", "call", "other"}
 VALID_DIRECTIONS = {"outbound", "inbound"}
-VALID_NOTE_KINDS = {"research", "meeting"}
+# `sighting` is what a source *claimed*, recorded before anybody checked it. It is deliberately not
+# `research`, which means somebody went and verified something. A LinkedIn post saying "we write
+# $500k cheques" and a fund's own site saying the same thing are not the same fact, and once they
+# are both prose in the same field nothing downstream can tell them apart. See PILOT-LOG.md L6/L19:
+# one post implied an immediate deadline that the programme's own site put five months out, and one
+# aggregator's cheque size differed from the fund's published figure by roughly 6x.
+VALID_NOTE_KINDS = {"research", "meeting", "sighting", "screening"}
+
+# Whether anyone has checked this counterparty against their own published eligibility criteria.
+#
+# Deliberately a separate field from `status`, not another status value. Status tracks how far a
+# relationship has got (cold -> contacted -> meeting); eligibility asks a different question whose
+# answer does not change as the relationship moves. Folding one into the other repeats the L7
+# mistake — a field carrying two meanings compares across records for neither.
+#
+# The empty string reads as `unscreened`, the same way an empty status reads as `cold`: a record
+# that has never carried a verdict has not been screened, and saying so is the whole point.
+VALID_ELIGIBILITY = {"eligible", "ineligible"}
+UNSCREENED = "unscreened"
+
+# Statuses where an unscreened record is not a problem worth flagging: the record is already out of
+# play, so nobody is about to approach it.
+CLOSED_STATUSES = {"screened-out", "passed", "declined"}
 
 # Month precision is allowed on purpose: programmes routinely publish "applications close in
 # February 2027" with no day. Forcing YYYY-MM-DD would mean inventing a day that nobody stated.
@@ -80,6 +102,8 @@ _MERGEABLE_FIELDS = (
     "submission",
     "deadline",
     "status",
+    "eligibility",
+    "eligibility_criterion",
     "note",
 )
 
@@ -96,6 +120,15 @@ def _check_status(status: str) -> str:
     if status not in VALID_STATUSES:
         raise LedgerError(f"status must be one of {sorted(VALID_STATUSES)}, got {status!r}")
     return status
+
+
+def _check_eligibility(eligibility: str) -> str:
+    if eligibility not in VALID_ELIGIBILITY:
+        raise LedgerError(
+            f"eligibility verdict must be one of {sorted(VALID_ELIGIBILITY)}, got {eligibility!r}. "
+            f"{UNSCREENED!r} is the absence of a verdict, not one you can record."
+        )
+    return eligibility
 
 
 def _check_entity_kind(entity_kind: str) -> str:
@@ -186,15 +219,20 @@ class Ledger:
         submission: str = "",
         deadline: str = "",
         status: str = "",
+        eligibility: str = "",
+        eligibility_criterion: str = "",
         note: str = "",
     ) -> dict:
         """Append an investor line. Omitted fields are carried forward from earlier lines by `fold()`.
 
         `status` defaults to empty rather than "cold" so that an update which doesn't mention status
         leaves the existing one alone. A record that has never carried a status reads as "cold".
+        The same holds for `eligibility`, which reads as "unscreened".
         """
         if status:
             _check_status(status)
+        if eligibility:
+            _check_eligibility(eligibility)
         if entity_kind:
             _check_entity_kind(entity_kind)
         if submission:
@@ -215,9 +253,48 @@ class Ledger:
             "submission": submission,
             "deadline": deadline,
             "status": status,
+            "eligibility": eligibility,
+            "eligibility_criterion": eligibility_criterion,
             "note": note,
         }
         return self._append(record)
+
+    def screen(
+        self,
+        investor_id: str,
+        verdict: str,
+        criterion: str,
+        reason: str,
+    ) -> tuple[dict, dict]:
+        """Record an eligibility verdict: two lines, the field and the evidence for it.
+
+        Both are required. The pilot's failure was not that verdicts were wrong, it was that they
+        lived in someone's head or in loose prose, so nothing could tell a checked record from an
+        unchecked one (PILOT-LOG.md L8, L31). A verdict with no criterion is the same problem in a
+        new field, so `criterion` and `reason` are not optional.
+
+        `ineligible` also sets `status` to `screened-out`, because they are one event: we looked at
+        their published rules and ruled them out before contacting anyone. Leaving the caller to
+        keep the two in step by hand is how they drift apart.
+        """
+        _check_eligibility(verdict)
+        if not criterion.strip():
+            raise LedgerError("criterion is required — name the published rule that decided it")
+        if not reason.strip():
+            raise LedgerError("reason is required — a verdict with no evidence is not a verdict")
+        investor = self.latest_investor(investor_id)
+        if investor is None:
+            raise LedgerError(f"no investor with id {investor_id!r} — add it with `pia investor` first")
+
+        record = self.investor(
+            investor_id,
+            investor.get("firm", ""),
+            eligibility=verdict,
+            eligibility_criterion=criterion,
+            status="screened-out" if verdict == "ineligible" else "",
+        )
+        note = self.note(investor_id, "screening", reason, next_steps=criterion)
+        return record, note
 
     def touch(
         self,
@@ -226,13 +303,34 @@ class Ledger:
         direction: str,
         summary: str,
         note: str = "",
+        force_unscreened: bool = False,
     ) -> dict:
         if channel not in VALID_CHANNELS:
             raise LedgerError(f"channel must be one of {sorted(VALID_CHANNELS)}, got {channel!r}")
         if direction not in VALID_DIRECTIONS:
             raise LedgerError(f"direction must be one of {sorted(VALID_DIRECTIONS)}, got {direction!r}")
-        if self.latest_investor(investor_id) is None:
+        investor = self.latest_investor(investor_id)
+        if investor is None:
             raise LedgerError(f"no investor with id {investor_id!r} — add it with `pia investor` first")
+
+        # The one hard gate in this CLI, and it is a smoke alarm rather than a lock: by the time an
+        # outbound touch is logged the message has already been sent by hand, and nothing in a
+        # ledger sits upstream of that. What it does buy is that the mistake surfaces while the
+        # conversation is still fresh, at the first moment the tooling is involved at all.
+        eligibility = investor.get("eligibility") or UNSCREENED
+        if direction == "outbound" and eligibility != "eligible" and not force_unscreened:
+            if eligibility == "ineligible":
+                detail = (
+                    f"{investor_id!r} was screened out as ineligible"
+                    + (f" ({investor['eligibility_criterion']})" if investor.get("eligibility_criterion") else "")
+                )
+            else:
+                detail = f"nobody has screened {investor_id!r} against their published criteria"
+            raise LedgerError(
+                f"refusing to log an outbound touch: {detail}. Run `pia screen --investor "
+                f"{investor_id} ...` first, or pass --force-unscreened if this was deliberate."
+            )
+
         record = {
             "kind": "touch",
             "investor_id": investor_id,
@@ -242,6 +340,10 @@ class Ledger:
             "summary": summary,
             "note": note,
         }
+        # Recorded, not just permitted. An override that leaves no trace is indistinguishable from
+        # the gate never having been there.
+        if force_unscreened and direction == "outbound" and eligibility != "eligible":
+            record["forced_past_eligibility"] = eligibility
         return self._append(record)
 
     def note(

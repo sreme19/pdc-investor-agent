@@ -3,7 +3,13 @@ name = "pdc-investor-agent"
 version = "0.1.0"
 description = "Zero-API ledger CLI for investor outreach, research, and relationship tracking (Pocket Dating Coach / Riteangle fundraise)."
 requires-python = ">=3.10"
-dependencies = []
+# The only dependency, and only for the Apple Numbers mirror (`pia sheet`). Kept a plain
+# dependency rather than an optional extra: an extra that is not installed would make the mirror
+# silently stop updating, and a sheet that quietly goes stale is worse than no sheet. The ledger
+# itself still needs nothing — no Anthropic client, no credentials (SPEC.md decisions 1 and 4).
+dependencies = [
+  "numbers-parser>=4.19",
+]
 
 [project.optional-dependencies]
 dev = [
