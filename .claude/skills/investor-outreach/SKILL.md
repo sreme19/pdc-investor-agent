@@ -38,6 +38,12 @@ pia touch --investor acme-vc --channel email --direction outbound \
 pia investor --id acme-vc --firm "Acme Ventures" --status contacted
 ```
 
+If the summary quotes a figure — an amount discussed, a cheque range, a valuation — use
+`--summary-file` with the text in a file instead of typing it inline. The shell eats `$` sequences
+before `pia` sees them, and the figure disappears from the record with nothing left to detect it by
+(`PILOT-LOG.md` L23). `pia` prints the figures it stored after each write; check them against what
+you meant to say.
+
 If a reply comes back later, log it too (`--direction inbound`) and move the status forward
 (`meeting`, `diligence`, `committed`, `passed`, `declined`) as it actually changes — don't advance
 status speculatively ahead of what's actually happened.

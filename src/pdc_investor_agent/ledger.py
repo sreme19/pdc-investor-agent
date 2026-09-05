@@ -14,12 +14,23 @@ reference an investor id, and a parallel kind would fork that reference into two
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 DEFAULT_LEDGER_PATH = Path(__file__).resolve().parent.parent.parent / "ledger" / "records.jsonl"
+
+# Overridable so the CLI can be exercised against a throwaway ledger in tests without ever
+# touching the real (gitignored) one. Nothing in normal operation sets this.
+LEDGER_PATH_ENV = "PIA_LEDGER_PATH"
+
+
+def default_ledger_path() -> Path:
+    override = os.environ.get(LEDGER_PATH_ENV)
+    return Path(override) if override else DEFAULT_LEDGER_PATH
+
 
 VALID_STATUSES = {
     "cold",
@@ -141,7 +152,7 @@ def _merge_investor(prior: dict | None, incoming: dict) -> dict:
 
 @dataclass
 class Ledger:
-    path: Path = field(default_factory=lambda: DEFAULT_LEDGER_PATH)
+    path: Path = field(default_factory=default_ledger_path)
 
     def _append(self, record: dict) -> dict:
         self.path.parent.mkdir(parents=True, exist_ok=True)

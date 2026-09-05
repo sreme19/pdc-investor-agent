@@ -33,17 +33,34 @@ duplicate research on an investor already past `cold`.
 If the investor isn't in the ledger yet, add them first:
 
 ```
-pia investor --id acme-vc --firm "Acme Ventures" --stage-focus seed --check-size "$25k-100k" \
+pia investor --id acme-vc --firm "Acme Ventures" --stage-focus seed --check-size '$25k-100k' \
   --source "found via <how>" --status cold
 ```
 
-Then log the research as a note, with the warm-intro path (if any) in `--next-steps`:
+Note the **single** quotes around the check size. In double quotes the shell expands `$25k` to
+nothing before `pia` runs, and the record silently stores `-100k`.
+
+Then log the research as a note. Write the body to a file and pass it with `--summary-file`, rather
+than inline on the command line:
 
 ```
-pia note --investor acme-vc --kind research \
-  --summary "Seed-stage consumer fund; portfolio includes <comparable>; thesis emphasizes retention over acquisition" \
+cat > /tmp/note.md <<'EOF'
+Seed-stage consumer fund; portfolio includes <comparable>; thesis emphasizes retention over
+acquisition. Cheque size $500k-$2M per their own site.
+EOF
+
+pia note --investor acme-vc --kind research --summary-file /tmp/note.md \
   --next-steps "warm intro via <name>, portfolio founder at <company>"
 ```
+
+`--summary-file -` reads the body from stdin, so a `<<'EOF'` heredoc piped straight in works too.
+**Why this matters:** anything you type inline goes through the shell first, which deletes `$` and
+the digits after it — a fund size or cheque range can vanish in transit with nothing left in the
+text to notice it by. A file never passes through that. This is `PILOT-LOG.md` L23, and it has
+already corrupted one real record. Short bodies with no figures can still use `--summary` inline.
+
+After every write, `pia` prints a line like `stored 412 chars · 3 figures: 500, 2, 55`. Read it.
+Compare the figures against what you meant to store — that is the check that a number survived.
 
 ## Reporting back
 

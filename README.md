@@ -39,6 +39,8 @@ pia show acme-vc
 | `pia pipeline` | Shows every investor grouped by status, with entity kind, deadline, and the age of their last touch. | Before a follow-up pass, or any time you want to know where things stand. |
 | `pia stats` | One-line record counts by kind. | Quick sanity check. |
 
+Every free-text field (`--summary`, `--next-steps`, `--note`) has a `-file` twin — `--summary-file PATH`, or `-` for stdin — that reads the body from a file instead of the command line. **Use it for anything containing a figure.** Text typed inline passes through the shell, which expands `$55 million` to ` million` before `pia` ever runs; the figure is gone and nothing in the stored string reveals that it was ever there. A file never touches the shell. Every write also prints back the character count and each figure stored, so a number lost anywhere upstream is visible instead of silent. See `PILOT-LOG.md` L23 — this corrupted a real record before it was fixed.
+
 ## Skills
 
 - **`investor-research`** — researches a named fund/angel (thesis fit, portfolio overlap, warm-intro
