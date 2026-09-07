@@ -46,6 +46,7 @@ PIPELINE_HEADERS = [
     "First Seen",
     "ID",
     "Firm",
+    "Organiser",
     "Kind",
     "Status",
     "Eligibility",
@@ -54,7 +55,10 @@ PIPELINE_HEADERS = [
     "Stage Focus",
     "Check Size",
     "Deadline",
+    "Deadline Source",
     "Submission",
+    "Route Open",
+    "Conflicts",
     "Contact",
     "Source",
     "Source URL",
@@ -119,6 +123,25 @@ LEGEND_ROWS = [
     ["rolling", "Somebody checked, and there is no date."],
     ["YYYY-MM", "Only a month was published. A day would be invention."],
     ["YYYY-MM-DD", "A published date."],
+    ["", ""],
+    ["DEADLINE SOURCE", "Where the date was read. A date with no provenance was wrong twice."],
+    ["first-party-page", "The counterparty's own page published it."],
+    ["form-itself", "The application form stated it."],
+    ["press", "Reported, not published — INCLUDING the organiser's own newsroom."],
+    ["social", "A post or caption. One such date had already been extended once."],
+    ["UNRECORDED", "Written before this column existed. Re-verify; do not read as checked."],
+    ["", ""],
+    ["ROUTE OPEN", "Whether the submission route was seen accepting. NOT the same as the window."],
+    ["observed-accepting", "The form took input when somebody looked."],
+    ["observed-closed", "The route was shut when somebody looked."],
+    ["unknown", "Somebody looked and could not tell. Blank means nobody looked."],
+    ["", "A closed window and a form still accepting came apart once. Read both columns."],
+    ["", ""],
+    ["CONFLICTS", "Fields two of the counterparty's OWN pages disagree about."],
+    ["", "Not an aggregator problem. Treat the named fields as untrusted, not as resolved."],
+    ["", ""],
+    ["ORGANISER", "Set when one counterparty runs more than one thing."],
+    ["", "Two programmes from one organiser have separate deadlines and separate routes."],
 ]
 
 
@@ -215,6 +238,7 @@ def build_pipeline_rows(ledger, now: datetime | None = None) -> list[dict]:
                 "First Seen": first_seen.get(investor_id, investor["ts"])[:10],
                 "ID": investor_id,
                 "Firm": _norm(investor.get("firm")),
+                "Organiser": _norm(investor.get("organiser")),
                 "Kind": _norm(investor.get("entity_kind")),
                 # A record that never carried a status reads as cold — same rule as `pia pipeline`.
                 "Status": _norm(investor.get("status")) or "cold",
@@ -226,7 +250,18 @@ def build_pipeline_rows(ledger, now: datetime | None = None) -> list[dict]:
                 "Stage Focus": _norm(investor.get("stage_focus")),
                 "Check Size": _norm(investor.get("check_size")),
                 "Deadline": _norm(investor.get("deadline")),
+                # Never blank when there is a deadline, for the same reason Eligibility is never
+                # blank: a blank cell reads as "not applicable", and the state worth seeing here is
+                # "this date has no provenance on record". Rows written before the field existed
+                # land in that state honestly rather than passing as verified.
+                "Deadline Source": (
+                    _norm(investor.get("deadline_source")) or "UNRECORDED"
+                    if investor.get("deadline")
+                    else ""
+                ),
                 "Submission": _norm(investor.get("submission")),
+                "Route Open": _norm(investor.get("submission_state")),
+                "Conflicts": _norm(investor.get("conflicting_fields")),
                 "Contact": _norm(investor.get("contact")),
                 "Source": _norm(investor.get("source")),
                 "Source URL": _norm(investor.get("source_url")),

@@ -17,9 +17,12 @@ from pathlib import Path
 from pdc_investor_agent.ledger import (
     CLOSED_STATUSES,
     UNSCREENED,
+    UNTRUSTED_DEADLINE_SOURCES,
+    VALID_DEADLINE_SOURCES,
     VALID_ELIGIBILITY,
     VALID_ENTITY_KINDS,
     VALID_STATUSES,
+    VALID_SUBMISSION_STATES,
     VALID_SUBMISSIONS,
     Ledger,
     LedgerError,
@@ -167,7 +170,11 @@ def cmd_investor(args: argparse.Namespace) -> int:
         source=args.source or "",
         source_url=args.source_url or "",
         submission=args.submission or "",
+        submission_state=args.submission_state or "",
         deadline=args.deadline or "",
+        deadline_source=args.deadline_source or "",
+        organiser=args.organiser or "",
+        conflicting_fields=args.conflicting_fields or "",
         status=args.status or "",
         note=note,
     )
@@ -294,6 +301,36 @@ def cmd_note(args: argparse.Namespace) -> int:
     return 0
 
 
+def _deadline_line(inv: dict, *, terse: bool = False) -> str | None:
+    """How a deadline prints, which depends entirely on where it came from.
+
+    Three outcomes, not two. A date sourced from the counterparty's own pages prints plainly. A
+    date from press or social prints marked, because that is the case that has twice been the only
+    date available and has twice been wrong or stale. A date written before this field existed
+    prints as unknown provenance — it is not untrusted, and quietly promoting it to verified is the
+    move this whole change exists to stop.
+
+    `terse` drops only the last of those, and only for `rolling`. When the field was introduced, 16
+    of 22 live records were `rolling` with no provenance, so `pia pipeline` marked most of its own
+    rows — and this file's own rule is that a marker on every line is a marker nobody reads. The
+    suppression is deliberately narrow: a `rolling` from *press or social* still prints marked,
+    because "they have no deadline" sourced from a post is a claim that has already been wrong, and
+    `pia show` prints the unrecorded marker for everything regardless. Nothing is dropped from the
+    record; one reminder is dropped from one crowded view.
+    """
+    deadline = inv.get("deadline")
+    if not deadline:
+        return None
+    source = inv.get("deadline_source")
+    if not source:
+        if terse and deadline == "rolling":
+            return f"deadline: {deadline}"
+        return f"deadline: {deadline}  [provenance unrecorded — predates the field, re-verify]"
+    if source in UNTRUSTED_DEADLINE_SOURCES:
+        return f"deadline: {deadline}  [UNVERIFIED — {source} only, not the counterparty's own page]"
+    return f"deadline: {deadline}  (per {source})"
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     ledger = Ledger()
     detail = ledger.show(args.id)
@@ -319,17 +356,29 @@ def cmd_show(args: argparse.Namespace) -> int:
     if inv.get("eligibility_criterion"):
         print(f"    criterion: {inv['eligibility_criterion']}")
     for label, key in (
+        ("organiser", "organiser"),
         ("contact", "contact"),
         ("stage focus", "stage_focus"),
         ("check size", "check_size"),
         ("submission", "submission"),
-        ("deadline", "deadline"),
         ("source", "source"),
         ("source url", "source_url"),
         ("note", "note"),
     ):
         if inv.get(key):
             print(f"  {label}: {inv[key]}")
+    deadline_line = _deadline_line(inv)
+    if deadline_line:
+        print(f"  {deadline_line}")
+    if inv.get("submission_state"):
+        print(f"  submission state: {inv['submission_state']}")
+        # Spelled out because the two came apart once and nobody expected them to: the window had
+        # closed a week earlier and the form was still taking entries.
+        if inv["submission_state"] == "observed-accepting" and inv.get("deadline") not in ("", "rolling", None):
+            print("    (route observed open — this does NOT mean the published window is open)")
+    if inv.get("conflicting_fields"):
+        print(f"  CONFLICTING between the counterparty's own pages: {inv['conflicting_fields']}")
+        print("    treat those fields as untrusted; two of their own pages disagree")
 
     if not detail["history"]:
         print("\n  (no notes or touches logged)")
@@ -379,10 +428,30 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
             )
             flag = "  [UNSCREENED]" if unscreened else ""
             print(f"  [{investor['id']}] {label}{flag} — {touch_str}")
-            if investor.get("deadline"):
-                print(f"      deadline: {investor['deadline']}")
+            deadline_line = _deadline_line(investor, terse=True)
+            if deadline_line:
+                print(f"      {deadline_line}")
+            if investor.get("conflicting_fields"):
+                print(f"      CONFLICTING first-party fields: {investor['conflicting_fields']}")
             if investor.get("note"):
                 print(f"      note: {investor['note']}")
+
+    # After the status groups, not inside them: the whole point is that these rows are in
+    # different status groups and reading any one of them alone answers "what is open with this
+    # organiser?" wrongly.
+    if p["shared_organisers"]:
+        print("\n== counterparties running more than one thing ==")
+        for organiser, group in sorted(p["shared_organisers"].items()):
+            print(f"  {organiser} ({len(group)}):")
+            for investor in group:
+                bits = [f"status {investor.get('status') or 'cold'}"]
+                if investor.get("deadline"):
+                    source = investor.get("deadline_source") or "provenance unrecorded"
+                    bits.append(f"deadline {investor['deadline']} ({source})")
+                if investor.get("submission"):
+                    bits.append(f"via {investor['submission']}")
+                print(f"    [{investor['id']}] {investor['firm']} — {'; '.join(bits)}")
+            print("    these have separate deadlines and separate routes; do not read one as the other")
     return 0
 
 
@@ -447,6 +516,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="how an approach is actually made (decides what gets drafted)",
     )
     p.add_argument("--deadline", help="YYYY-MM-DD, YYYY-MM when only a month was published, or 'rolling' when there is none")
+    p.add_argument(
+        "--deadline-source",
+        choices=sorted(VALID_DEADLINE_SOURCES),
+        help="where you read the date. REQUIRED with --deadline. The organiser's own newsroom is "
+        "'press', not 'first-party-page' — verification is per field, not per counterparty",
+    )
+    p.add_argument(
+        "--submission-state",
+        choices=sorted(VALID_SUBMISSION_STATES),
+        help="whether the route was observed open — a separate fact from the deadline, because a "
+        "closed window and a form still taking entries came apart once already",
+    )
+    p.add_argument(
+        "--organiser",
+        help="slug of whoever runs this, when they run more than one thing; groups a written "
+        "application and a contest around the same event so one deadline cannot mask the other",
+    )
+    p.add_argument(
+        "--conflicting-fields",
+        help="comma-separated field names two of the counterparty's OWN pages disagree about; "
+        "marks them untrusted instead of picking a winner silently",
+    )
     p.add_argument(
         "--status",
         choices=sorted(VALID_STATUSES),

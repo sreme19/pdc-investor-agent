@@ -143,6 +143,7 @@ def test_create_then_mirror_writes_the_ledger_into_the_sheet(ledger, sheet):
         entity_kind="fund",
         check_size="$25k-100k",
         deadline="rolling",
+        deadline_source="first-party-page",
         status="cold",
     )
     mirror(ledger, sheet)

@@ -356,3 +356,27 @@ def test_pipeline_drops_the_flag_once_screened(run):
     )
     _, out = run("pipeline")
     assert "[UNSCREENED]" not in out
+
+
+def test_pipeline_suppresses_the_unrecorded_marker_only_for_rolling():
+    """16 of 22 live records were rolling with no provenance; marking every row marks nothing."""
+    from pdc_investor_agent.cli import _deadline_line
+
+    rolling_old = {"deadline": "rolling"}
+    dated_old = {"deadline": "2026-11-01"}
+
+    # pipeline: rolling goes quiet, a real date does not
+    assert _deadline_line(rolling_old, terse=True) == "deadline: rolling"
+    assert "provenance unrecorded" in _deadline_line(dated_old, terse=True)
+
+    # show: everything keeps its marker
+    assert "provenance unrecorded" in _deadline_line(rolling_old)
+    assert "provenance unrecorded" in _deadline_line(dated_old)
+
+    # a rolling claim from a post is still a claim, and stays marked even in pipeline
+    from_post = {"deadline": "rolling", "deadline_source": "social"}
+    assert "UNVERIFIED" in _deadline_line(from_post, terse=True)
+
+    # verified provenance prints plainly in both views
+    verified = {"deadline": "rolling", "deadline_source": "first-party-page"}
+    assert _deadline_line(verified, terse=True) == "deadline: rolling  (per first-party-page)"

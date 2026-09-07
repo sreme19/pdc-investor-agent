@@ -27,6 +27,19 @@ pia stats
 4. **Committed but not yet closed** — anyone at `committed` needs the human to track the actual legal/
    wire process outside this ledger; this repo only tracks the relationship, never deal execution or
    money movement (see `SPEC.md` decision 3).
+5. **Deadlines marked `[UNVERIFIED]`** — the date came from press or social, not the counterparty's
+   own page. Report these as dates *nobody has confirmed*, never as the deadline. Twice such a date
+   has been the only one available and twice it has been wrong or already extended (L35). If one is
+   about to drive real work — a submission, travel, a week of drafting — say plainly that the first
+   step is a human opening the counterparty's own page.
+6. **Deadlines marked `[provenance unrecorded]`** — written before the field existed. These are not
+   untrusted and not verified; they are unknown, and the honest report says so rather than picking.
+7. **Counterparties running more than one thing** — `pia pipeline` prints these in their own section
+   at the end. Read the group, never a single row: one organiser's closed application and open
+   contest sit in different status groups, so any one row answers "what is open with them?" wrongly
+   (L37).
+8. **Fields flagged `CONFLICTING`** — two of the counterparty's own pages disagree. Do not resolve
+   it in the summary. Name the field and say a human has to decide which page is maintained.
 
 ## Reporting back
 

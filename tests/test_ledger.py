@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pdc_investor_agent.ledger import Ledger, LedgerError
@@ -109,8 +111,10 @@ def test_entity_kind_and_submission_validated(ledger):
 
 
 def test_deadline_accepts_a_date_or_rolling(ledger):
-    ledger.investor("acme-acc", "Acme Accelerator", deadline="2027-02-01")
-    ledger.investor("beta-fund", "Beta Fund", deadline="rolling")
+    ledger.investor("acme-acc", "Acme Accelerator", deadline="2027-02-01",
+                    deadline_source="first-party-page")
+    ledger.investor("beta-fund", "Beta Fund", deadline="rolling",
+                    deadline_source="first-party-page")
     investors = ledger.fold()["investors"]
     assert investors["acme-acc"]["deadline"] == "2027-02-01"
     assert investors["beta-fund"]["deadline"] == "rolling"
@@ -142,7 +146,8 @@ def test_show_unknown_investor_is_none(ledger):
 
 def test_deadline_accepts_month_precision(ledger):
     """Programmes publish "closes February 2027" without a day; don't force one to be invented."""
-    ledger.investor("acme-acc", "Acme Accelerator", deadline="2027-02")
+    ledger.investor("acme-acc", "Acme Accelerator", deadline="2027-02",
+                    deadline_source="first-party-page")
     assert ledger.fold()["investors"]["acme-acc"]["deadline"] == "2027-02"
     with pytest.raises(LedgerError):
         ledger.investor("acme-acc", "Acme Accelerator", deadline="2027-13")
@@ -249,3 +254,83 @@ def test_the_verdict_keeps_its_evidence_in_the_history(ledger):
     assert len(screening) == 1
     assert screening[0]["summary"] == "their site states seed, no exclusions"
     assert screening[0]["next_steps"] == "seed consumer"
+
+
+def test_a_deadline_cannot_be_written_without_saying_where_it_came_from(ledger):
+    """The L35 case: twice the deciding date came from press or social and looked verified."""
+    with pytest.raises(LedgerError, match="deadline source"):
+        ledger.investor("acme-acc", "Acme Accelerator", deadline="2026-10-02")
+    # and the reverse: a provenance with nothing to be the provenance of
+    with pytest.raises(LedgerError, match="nothing for it to source"):
+        ledger.investor("acme-acc", "Acme Accelerator", deadline_source="press")
+
+
+def test_deadline_source_rejects_anything_outside_the_four_states(ledger):
+    with pytest.raises(LedgerError):
+        ledger.investor(
+            "acme-acc", "Acme Accelerator", deadline="2026-10-02", deadline_source="the organiser"
+        )
+
+
+def test_press_and_social_deadlines_read_as_untrusted_and_first_party_does_not(ledger):
+    ledger.investor("acme-acc", "Acme Accelerator", deadline="2026-08-31", deadline_source="press")
+    ledger.investor("beta-acc", "Beta Accelerator", deadline="2026-10-02",
+                    deadline_source="first-party-page")
+    investors = ledger.fold()["investors"]
+    assert ledger.deadline_is_trusted(investors["acme-acc"]) is False
+    assert ledger.deadline_is_trusted(investors["beta-acc"]) is True
+
+
+def test_a_deadline_predating_the_field_is_neither_trusted_nor_untrusted(ledger):
+    """A record written before provenance existed must not be rounded to either verdict."""
+    ledger.path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "kind": "investor", "id": "old-acc", "ts": "2026-09-01T00:00:00+00:00",
+            "firm": "Old Accelerator", "deadline": "2026-11-01",
+        }) + "\n")
+    old = ledger.fold()["investors"]["old-acc"]
+    assert ledger.deadline_is_trusted(old) is None
+    assert ledger.deadline_is_trusted({"deadline": ""}) is None
+
+
+def test_submission_state_is_a_separate_fact_from_the_deadline(ledger):
+    """They came apart once: window closed a week earlier, form still taking entries."""
+    ledger.investor(
+        "acme-acc", "Acme Accelerator",
+        deadline="2026-08-31", deadline_source="press", submission_state="observed-accepting",
+    )
+    merged = ledger.fold()["investors"]["acme-acc"]
+    assert merged["deadline"] == "2026-08-31"
+    assert merged["submission_state"] == "observed-accepting"
+    with pytest.raises(LedgerError):
+        ledger.investor("acme-acc", "Acme Accelerator", submission_state="probably-open")
+
+
+def test_conflicting_fields_must_name_fields_that_exist(ledger):
+    ledger.investor("acme-acc", "Acme Accelerator", conflicting_fields="deadline, contact")
+    assert ledger.fold()["investors"]["acme-acc"]["conflicting_fields"] == "deadline,contact"
+    with pytest.raises(LedgerError, match="unknown field"):
+        ledger.investor("acme-acc", "Acme Accelerator", conflicting_fields="venue")
+    with pytest.raises(LedgerError, match="at least one field"):
+        ledger.investor("acme-acc", "Acme Accelerator", conflicting_fields=" , ")
+
+
+def test_pipeline_groups_counterparties_running_more_than_one_thing(ledger):
+    """L37: one organiser, a closed written application and an open contest a month later."""
+    ledger.investor("ys-vibecode30", "VibeCode30", organiser="yourstory", status="screened-out",
+                    deadline="2026-08-31", deadline_source="press", submission="form")
+    ledger.investor("ys-30secondsparks", "30SecondSparks", organiser="yourstory", status="cold",
+                    deadline="2026-10-02", deadline_source="social", submission="dm")
+    ledger.investor("acme-vc", "Acme Ventures", status="cold")
+
+    shared = ledger.pipeline()["shared_organisers"]
+    assert set(shared) == {"yourstory"}
+    assert [r["id"] for r in shared["yourstory"]] == ["ys-vibecode30", "ys-30secondsparks"]
+    # the two sit in different status groups, which is exactly why reading one alone misleads
+    assert shared["yourstory"][0]["status"] != shared["yourstory"][1]["status"]
+
+
+def test_an_organiser_with_one_record_is_not_grouped(ledger):
+    ledger.investor("solo-acc", "Solo Accelerator", organiser="solo-org", status="cold")
+    assert ledger.pipeline()["shared_organisers"] == {}

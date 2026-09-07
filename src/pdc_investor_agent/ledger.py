@@ -58,6 +58,32 @@ VALID_ENTITY_KINDS = {"fund", "angel", "accelerator", "programme", "grant", "int
 # questions is a different artifact from a cold email, and finding out which at drafting time is late.
 VALID_SUBMISSIONS = {"form", "email", "dm", "warm-intro", "event", "other"}
 
+# Where the deadline was actually read. A date's *shape* was already validated; its *provenance*
+# was not, and provenance is what has twice been wrong (PILOT-LOG.md L35). On 6 Sep the deciding
+# deadline existed only in a social-media caption and had already been extended once. On 7 Sep a
+# programme's closing date was recoverable only from the organiser's own editorial coverage of its
+# own programme — a news article — while the application form stayed live, accepted input, and
+# stated no date anywhere.
+#
+# `first-party-page` and `form-itself` are the counterparty publishing its own date. `press` and
+# `social` are somebody reporting it, and the fact that the somebody is the organiser's own
+# newsroom does not promote it: L19 says verification is per-field, so "first-party" is a claim
+# about where *this field* came from, not about the counterparty's identity.
+VALID_DEADLINE_SOURCES = {"first-party-page", "form-itself", "press", "social"}
+
+# A deadline from these is recorded, and read as untrusted. Nothing refuses to write it — the date
+# is often the only one there is — but it must never print alongside a verified one unmarked.
+UNTRUSTED_DEADLINE_SOURCES = {"press", "social"}
+
+# Whether the submission route was observed open. Distinct from the deadline on purpose: on 7 Sep
+# the window had closed a week earlier and the form was still accepting entries, so the founder was
+# filling in a form that no longer counted. One fact could not carry both, and the schema had
+# nowhere to put the second (PILOT-LOG.md L35).
+#
+# `unknown` is the honest default and is written, not left blank, for the same reason `rolling` is:
+# blank means nobody looked, `unknown` means somebody looked and could not tell.
+VALID_SUBMISSION_STATES = {"observed-accepting", "observed-closed", "unknown"}
+
 VALID_CHANNELS = {"email", "linkedin", "warm-intro", "event", "call", "other"}
 VALID_DIRECTIONS = {"outbound", "inbound"}
 # `sighting` is what a source *claimed*, recorded before anybody checked it. It is deliberately not
@@ -66,7 +92,14 @@ VALID_DIRECTIONS = {"outbound", "inbound"}
 # are both prose in the same field nothing downstream can tell them apart. See PILOT-LOG.md L6/L19:
 # one post implied an immediate deadline that the programme's own site put five months out, and one
 # aggregator's cheque size differed from the fund's published figure by roughly 6x.
-VALID_NOTE_KINDS = {"research", "meeting", "sighting", "screening"}
+VALID_NOTE_KINDS = {"research", "meeting", "sighting", "screening", "conflict"}
+
+# `conflict` is for the case L34 found and nothing could record: two of the counterparty's *own*
+# pages disagreed about the same field. The organiser published one event on two of its domains
+# with two different venues. Neither page is an aggregator, so "if the counterparty does not
+# publish it, it is unavailable" has nothing to say — the counterparty published it twice,
+# differently. It was resolved by judgement, and the judgement then read like a verification.
+# The disagreeing field was a venue, i.e. the thing somebody books a flight against.
 
 # Whether anyone has checked this counterparty against their own published eligibility criteria.
 #
@@ -93,6 +126,7 @@ _ISO_DATE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
 # the contact and source that an earlier line established.
 _MERGEABLE_FIELDS = (
     "firm",
+    "organiser",
     "contact",
     "entity_kind",
     "stage_focus",
@@ -100,7 +134,10 @@ _MERGEABLE_FIELDS = (
     "source",
     "source_url",
     "submission",
+    "submission_state",
     "deadline",
+    "deadline_source",
+    "conflicting_fields",
     "status",
     "eligibility",
     "eligibility_criterion",
@@ -145,6 +182,43 @@ def _check_submission(submission: str) -> str:
             f"submission must be one of {sorted(VALID_SUBMISSIONS)}, got {submission!r}"
         )
     return submission
+
+
+def _check_deadline_source(deadline_source: str) -> str:
+    if deadline_source not in VALID_DEADLINE_SOURCES:
+        raise LedgerError(
+            f"deadline source must be one of {sorted(VALID_DEADLINE_SOURCES)}, got "
+            f"{deadline_source!r}. The organiser's own newsroom is 'press', not 'first-party-page'"
+        )
+    return deadline_source
+
+
+def _check_submission_state(submission_state: str) -> str:
+    if submission_state not in VALID_SUBMISSION_STATES:
+        raise LedgerError(
+            f"submission state must be one of {sorted(VALID_SUBMISSION_STATES)}, got "
+            f"{submission_state!r}"
+        )
+    return submission_state
+
+
+def _check_conflicting_fields(conflicting_fields: str) -> str:
+    """Field names, comma-separated, that two of the counterparty's own pages disagree about.
+
+    Restricted to fields this record actually has, so a typo cannot mark a field nobody can then
+    find. The point of the marker is that a reader sees the untrustworthy field *as* untrustworthy;
+    pointing at a field that does not exist defeats that.
+    """
+    names = [name.strip() for name in conflicting_fields.split(",") if name.strip()]
+    if not names:
+        raise LedgerError("conflicting fields must name at least one field")
+    unknown = [name for name in names if name not in _MERGEABLE_FIELDS]
+    if unknown:
+        raise LedgerError(
+            f"cannot mark unknown field(s) as conflicting: {unknown}. "
+            f"Valid: {sorted(_MERGEABLE_FIELDS)}"
+        )
+    return ",".join(names)
 
 
 def _check_deadline(deadline: str) -> str:
@@ -210,6 +284,7 @@ class Ledger:
         self,
         id: str,
         firm: str,
+        organiser: str = "",
         contact: str = "",
         entity_kind: str = "",
         stage_focus: str = "",
@@ -217,7 +292,10 @@ class Ledger:
         source: str = "",
         source_url: str = "",
         submission: str = "",
+        submission_state: str = "",
         deadline: str = "",
+        deadline_source: str = "",
+        conflicting_fields: str = "",
         status: str = "",
         eligibility: str = "",
         eligibility_criterion: str = "",
@@ -228,6 +306,12 @@ class Ledger:
         `status` defaults to empty rather than "cold" so that an update which doesn't mention status
         leaves the existing one alone. A record that has never carried a status reads as "cold".
         The same holds for `eligibility`, which reads as "unscreened".
+
+        A `deadline` cannot be written without a `deadline_source`. That pairing is the only hard
+        new gate here, and it is deliberately at the write: a date with no provenance is exactly
+        what shipped twice, and it looked identical to a verified one both times. Existing lines
+        predate the field and keep reading fine — `fold()` carries forward whatever is there — so
+        the rule binds new writes without rewriting history.
         """
         if status:
             _check_status(status)
@@ -237,13 +321,31 @@ class Ledger:
             _check_entity_kind(entity_kind)
         if submission:
             _check_submission(submission)
+        if submission_state:
+            _check_submission_state(submission_state)
+        if conflicting_fields:
+            conflicting_fields = _check_conflicting_fields(conflicting_fields)
         if deadline:
             _check_deadline(deadline)
+            if not deadline_source:
+                raise LedgerError(
+                    f"refusing to write deadline {deadline!r} with no deadline source. "
+                    f"Pass one of {sorted(VALID_DEADLINE_SOURCES)} — say where you read it. "
+                    "Twice now the deciding date has come from press or social while the "
+                    "counterparty's own pages published nothing (PILOT-LOG.md L35)."
+                )
+        if deadline_source:
+            _check_deadline_source(deadline_source)
+            if not deadline:
+                raise LedgerError(
+                    "deadline source given with no deadline — there is nothing for it to source"
+                )
         record = {
             "kind": "investor",
             "id": id,
             "ts": _now_iso(),
             "firm": firm,
+            "organiser": organiser,
             "contact": contact,
             "entity_kind": entity_kind,
             "stage_focus": stage_focus,
@@ -251,13 +353,29 @@ class Ledger:
             "source": source,
             "source_url": source_url,
             "submission": submission,
+            "submission_state": submission_state,
             "deadline": deadline,
+            "deadline_source": deadline_source,
+            "conflicting_fields": conflicting_fields,
             "status": status,
             "eligibility": eligibility,
             "eligibility_criterion": eligibility_criterion,
             "note": note,
         }
         return self._append(record)
+
+    def deadline_is_trusted(self, investor: dict) -> bool | None:
+        """Whether this record's deadline came from the counterparty's own pages.
+
+        `None` means there is no deadline, or it predates `deadline_source` — which is not the same
+        as untrusted, and the caller has to say so rather than rounding it to either verdict.
+        """
+        if not investor.get("deadline"):
+            return None
+        source = investor.get("deadline_source")
+        if not source:
+            return None
+        return source not in UNTRUSTED_DEADLINE_SOURCES
 
     def screen(
         self,
@@ -416,14 +534,33 @@ class Ledger:
         return {"investor": investor, "history": history}
 
     def pipeline(self) -> dict:
-        """Every investor grouped by status, with the most recent touch for each."""
+        """Every investor grouped by status, with the most recent touch for each.
+
+        `shared_organisers` holds the counterparties running more than one thing. L37: one organiser
+        ran a written application that had already closed and a social contest closing a month
+        later, around the same event. Grouped only by status, those are two unrelated rows, and
+        reading either one answers "what is open with them?" wrongly. Only organisers with two or
+        more records appear, because a single record needs no grouping to be read correctly.
+        """
         folded = self.fold()
         last_touch_by_investor: dict[str, dict] = {}
         for t in folded["touches"]:
             last_touch_by_investor[t["investor_id"]] = t
         by_status: dict[str, list[dict]] = {}
+        by_organiser: dict[str, list[dict]] = {}
         for investor in folded["investors"].values():
             by_status.setdefault(investor.get("status") or "cold", []).append(investor)
+            if investor.get("organiser"):
+                by_organiser.setdefault(investor["organiser"], []).append(investor)
         for group in by_status.values():
             group.sort(key=lambda r: r["ts"])
-        return {"by_status": by_status, "last_touch_by_investor": last_touch_by_investor}
+        shared_organisers = {
+            organiser: sorted(group, key=lambda r: r["ts"])
+            for organiser, group in by_organiser.items()
+            if len(group) > 1
+        }
+        return {
+            "by_status": by_status,
+            "last_touch_by_investor": last_touch_by_investor,
+            "shared_organisers": shared_organisers,
+        }

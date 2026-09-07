@@ -446,3 +446,94 @@ modelled), L18, L22/L27 (fact sheet shape, still blocking), L25, L26, plus L32 a
 
 The binding constraint is unchanged: the best-fit counterparty in the ledger cannot be approached
 until the founder supplies the Round block and a revenue figure.
+
+---
+
+## Session 5 — 2026-09-06 · first screenshot run through the intake skill
+
+The first sighting the `opportunity-intake` skill was actually written for: a screenshot pasted in
+from a messaging app, forwarded by a friend, not sourced by anyone. Two findings, and the first one
+argues the skill's step order is incomplete.
+
+### L33 — Verifying a sighting at source found a *different, better, expiring* opportunity · open
+The pasted item was a social giveaway of conference passes — real, open, worth about four weeks of
+lead time, and not a funding channel at all. Verifying it meant reading the organiser's own site,
+and that site turned out to be running a **second** programme under the same event: a much better
+fit for the product, with an application form, and a deadline **the next day**. Nothing about the
+screenshot pointed at it. Nobody would have found it by researching what was pasted.
+
+Step 4 of the skill says verify each field at the counterparty's own site. It does not say *look at
+what else is on that site*, and the difference here was the whole value of the session: the thing
+the user asked about was the low-value half of what the source was offering.
+
+There is a matching risk in the other direction, which is why this is a finding and not just a nice
+outcome — a loop that wanders off the pasted item can spend a session on adjacent things nobody
+asked for. The fix has to be bounded.
+Candidate fix: add an explicit, scoped sweep to step 4 — while on the counterparty's own site, list
+their *other* open programmes and their deadlines, log any that are live, and stop there. Do not
+research them in the same pass unless one expires sooner than the one that was pasted.
+
+### L34 — Two of the counterparty's own pages disagreed, and one of them was stale · open
+Sharpens L19 (aggregators are unreliable) with the uncomfortable version: **first-party is not a
+single thing**. The organiser publishes the event on two of its own domains. One gives one venue,
+the other gives a different venue. Both are the counterparty. Neither is an aggregator, so the
+existing rule — "if the counterparty does not publish it, it is unavailable" — has nothing to say,
+because the counterparty published it twice, differently.
+
+It was resolved by judgement (the page carrying the current speaker list is presumably the
+maintained one) and the judgement was recorded as a judgement, not as a verification. That is the
+right handling, but it is not a rule, and the next person will re-derive it. Also worth noting the
+failure this permits is not abstract: the disagreeing field was a **venue**, i.e. the thing someone
+books a flight and a hotel against.
+Candidate fix: when two first-party pages conflict, record both and mark the field
+`conflicting-first-party` rather than picking a winner silently. A field nobody can trust should
+read as untrusted, not as verified-with-a-caveat buried in prose.
+
+### Also worth recording
+- The deciding field for the expiring programme — its deadline — appeared **nowhere on the
+  counterparty's website**. It existed only in a social-media caption, and that deadline had
+  already been extended once. The application form itself stated no closing date. So the single
+  fact the decision turned on had no first-party *web page* behind it at all, only a first-party
+  *post*. L19's "verification is per-field" holds; this is a case where the field's only source is
+  the channel the sighting came from in the first place.
+- The eligibility gate did its job in the cheap direction for once: the fatal criterion was a fact
+  about the *founder*, not the counterparty — a residency clause — and this repo holds nothing that
+  establishes it. It was asked, not inferred, and the answer arrived in under a minute. L12 said
+  founder constraints belong in the loop; this is the case for a persistent founder block covering
+  residency and entity registration, which every application form asks for and which nothing here
+  stores.
+
+## Session 7 — 2026-09-07 · an application form, worked end to end
+
+### L35 — A deadline in press coverage only, and a form that outlives it · open, second sighting
+The organiser's own site refused to be read (403 to every fetch). The closing date was recoverable
+only from the organiser's *editorial* coverage of its own programme — a news article, not a
+programme page — while the application form itself was still live, accepting input, and stated no
+date anywhere. So the founder was filling in a form a week after the published close.
+
+This is the **second** occurrence of the pattern recorded at the end of session 5, where a deciding
+deadline existed only in a social-media caption and had already been extended once. Twice now the
+deadline has been the one field with no first-party *page* behind it, while the form kept taking
+entries. That is no longer an anomaly.
+Candidate fix: treat `deadline` as unverified whenever its only source is press or social, even
+when the organiser published it — L19 says verification is per-field, and "first-party" is about
+the *field's* source, not the counterparty's identity. And record "form still accepting" as a
+distinct fact from "window open"; they came apart here.
+
+### L36 — The application asked for traction and this repo holds none · open
+The form's load-bearing question was proof of use, under an explicit false-claims-mean-
+disqualification clause. Nothing in this repo could answer it. The figures had to be derived from
+scratch against the product's production database, in the product repo, mid-application — and two
+of the obvious phrasings of them were wrong in the *flattering* direction until checked.
+Candidate fix: a traction block that is refreshed deliberately and dated, so an application quotes
+a reviewed number instead of one computed under time pressure. Where it lives is the open question:
+the numbers belong to the product repo, the need for them belongs here.
+
+### L37 — One organiser, two opportunities, different deadlines and different mechanisms · open
+The same organiser runs a written application (web form, closed 31 Aug) and a social contest
+(Instagram Reel, closes 2 Oct, prize is event passes) around the same event. The ledger models an
+opportunity as one record with one deadline and one submission mechanism. These are two records
+that share a counterparty, and conflating them would have pointed the founder at the wrong deadline.
+Candidate fix: opportunities need a counterparty grouping, so "everything open with this organiser"
+is answerable without one record's deadline masking another's. Extends L26 — records are not
+independent.
